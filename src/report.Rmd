@@ -1,30 +1,75 @@
 ---
-title: "Report"
+title: "Basic analysis of ligands"
 author: "writ3it"
-date: "25 listopada 2018"
-output: html_document
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output: 
+  html_document: 
+    highlight: kate
+    number_sections: yes
+    theme: united
+    toc: true
+    toc_float: true
+params:
+  source_url: "https://zenodo.org/record/1040778/files/all_summary.7z"
+  zipped: true
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
+working_dir <-getwd()
 ```
 
-## R Markdown
+# Summary
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+to do
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+# Analysis
 
-```{r cars}
-summary(cars)
+## Used R libraries 
+
+- ggplot2 - for visualisations 
+- dplyr - for human-friendly data processing 
+- DT - for dynamic tables
+- archive - for 7z extraction
+```{r libs, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+library(ggplot2)
+library(dplyr)
+library(DT)
+# needs libarchive-dev
+devtools::install_github("jimhester/archive")
+library(archive)
 ```
 
-## Including Plots
-
-You can also embed plots, for example:
-
-```{r pressure, echo=FALSE}
-plot(pressure)
+## Initialization code
+```{r init}
+set.seed(23) # for random functions
+prettyTable <- function(table_df, round_columns=numeric(), round_digits=2) {
+    DT::datatable(table_df, style="bootstrap", filter = "top", rownames = FALSE, extensions = "Buttons", options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'))) %>%
+    formatRound(round_columns, round_digits)
+} # same look of tables
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+## Data loading
+
+### Downloading dataset
+```{r loading}
+tempFilePath <- paste(working_dir,"/../data/temp.7z",sep='')
+dataFilePath <- paste(working_dir,"/../data/all_summary.csv",sep='')
+if (!file.exists(dataFilePath)){
+  message("Downloading data from: ",params$source_url);
+  download.file(params$source_url,tempFilePath)
+  archive_extract(tempFilePath,"./data");
+  if (!file.exists(dataFilePath)){
+    stop("Data file not found");
+  }
+} else {
+  message("Data was downloaded previously. Be careful!")
+}
+```
+
+### Reading sample data
+```{r sample_data}
+sampleRowsNo <- 100
+sample <- read.table(dataFilePath,header = TRUE, nrows = sampleRowsNo, sep = ";");
+prettyTable(sample)
+```
