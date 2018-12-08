@@ -301,8 +301,8 @@ dataFilePath &lt;-<span class="st"> </span><span class="kw">paste</span>(working
 <div class="sourceCode"><pre class="sourceCode r"><code class="sourceCode r">sampleRowsNo &lt;-<span class="st"> </span><span class="dv">1000</span>
 sample &lt;-<span class="st"> </span><span class="kw">read.table</span>(dataFilePath,<span class="dt">header =</span> <span class="ot">TRUE</span>, <span class="dt">nrows =</span> sampleRowsNo, <span class="dt">sep =</span> <span class="st">&quot;;&quot;</span>);</code></pre></div>
 </div>
-<div id="data-set-description" class="section level3">
-<h3><span class="header-section-number">2.3.3</span> Data set description</h3>
+<div id="dataset-attributes-lists" class="section level3">
+<h3><span class="header-section-number">2.3.3</span> Dataset attributes lists</h3>
 <div class="sourceCode"><pre class="sourceCode r"><code class="sourceCode r"><span class="co">#target class for classification</span>
 attrib.target_class &lt;-<span class="st"> &quot;res_name&quot;</span>
 <span class="co">#all attributes</span>
@@ -357,18 +357,6 @@ filtered_data &lt;-<span class="st"> </span>data <span class="op">%&gt;%</span>
 <span class="st">  </span><span class="kw">group_by</span>(res_name) <span class="op">%&gt;%</span><span class="st"> </span>
 <span class="st">  </span><span class="kw">summarize_all</span>(<span class="kw">funs</span>(mean))
 
-
-fill_gaps&lt;-<span class="st"> </span><span class="cf">function</span>(id, colName, colVal){
-
-  bad &lt;-<span class="st"> </span><span class="kw">is.na</span>(colVal)
-  ids &lt;-<span class="st"> </span>id[bad]
-  <span class="co">#vals &lt;- replacements %&gt;% filter( any( res_name %in% ids ) ) # %&gt;% select(!!treat_string_as_col(colName))</span>
-  <span class="kw">print</span>(ids)
-  colVal[bad]&lt;-<span class="st"> </span><span class="kw">unlist</span>(vals, <span class="dt">use.names =</span> <span class="ot">FALSE</span>)
- 
-  <span class="kw">return</span>(colVal)
-  
-}
 ids &lt;-<span class="st"> </span>filtered_data[,attrib.target_class]
 
 <span class="co">#?mutate</span>
