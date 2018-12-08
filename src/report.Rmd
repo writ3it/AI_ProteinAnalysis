@@ -84,7 +84,7 @@ sample <- read.table(dataFilePath,header = TRUE, nrows = sampleRowsNo, sep = ";"
 data <- sample
 ```
 
-### Data set description
+### Dataset attributes lists 
 
 ```{r attribs}
 #target class for classification
@@ -142,18 +142,6 @@ replacements <<- filtered_data %>%
   group_by(res_name) %>% 
   summarize_all(funs(mean))
 
-
-fill_gaps<- function(id, colName, colVal){
-
-  bad <- is.na(colVal)
-  ids <- id[bad]
-  #vals <- replacements %>% filter( any( res_name %in% ids ) ) # %>% select(!!treat_string_as_col(colName))
-  print(ids)
-  colVal[bad]<- unlist(vals, use.names = FALSE)
- 
-  return(colVal)
-  
-}
 ids <- filtered_data[,attrib.target_class]
 
 #?mutate
