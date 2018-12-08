@@ -32,9 +32,15 @@ to do
 - DT - for dynamic tables
 - archive - for 7z extraction
 ```{r libs, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
+install.packages("psych")
+
+library(psych)
+
 library(ggplot2)
 library(dplyr)
 library(DT)
+devtools::install_github("milesmcbain/friendlyeval")
+library(friendlyeval)
 # needs libarchive-dev
 devtools::install_github("jimhester/archive")
 library(archive)
@@ -67,9 +73,118 @@ if (!file.exists(dataFilePath)){
 }
 ```
 
+
+
 ### Reading sample data
 ```{r sample_data}
-sampleRowsNo <- 100
+sampleRowsNo <- 1000
 sample <- read.table(dataFilePath,header = TRUE, nrows = sampleRowsNo, sep = ";");
-prettyTable(sample)
 ```
+```{r init_data,echo=FALSE}
+data <- sample
+```
+
+### Data set description
+
+```{r attribs}
+#target class for classification
+attrib.target_class <- "res_name"
+#all attributes
+attrib.all <- colnames(data)
+#"local" attributes
+attrib.local <- attrib.all[ grepl("local_", attrib.all)]
+# dict_atom attribs
+attrib.dict <- attrib.all[grepl("dict_atom_", attrib.all)]
+# parts 
+attrib.part <- attrib.all[grepl("part_",attrib.all)]
+# skeleton
+attrib.skeleton <- attrib.all[grepl("skeleton_",attrib.all)]
+# resolution
+attrib.res <- "resolution"
+# params
+attrib.params <- c("fo_col","fc_col","weight_col","grid_space","solvent_radius","solvent_opening_radius")
+#uknown columns
+attrib.unknown <- c("blob_coverage","blob_volume_coverage_second","resolution_max_limit","FoFc_square_std","res_coverage","res_volume_coverage","FoFc_mean","FoFc_min","blob_volume_coverage","res_volume_coverage_second","FoFc_std","FoFc_max")
+# illegal attribs for classifications
+attrib.illegal <- c(c(
+  "title",
+  "pdb_code",
+  "res_name",
+  "res_id",
+  "chain_id",
+  "local_",
+  "weight_col" #is na!
+),
+attrib.local, #local are illegal,
+attrib.dict, #dicts are illegal,
+attrib.unknown,
+attrib.params
+)
+
+attrib.legal<-setdiff(attrib.all, attrib.illegal)
+```
+## Data cleansing
+
+### Remove unnecesary ligands (project requirement)
+```{r cleansing_1}
+excluded_names <- c("UNK", "UNX", "UNL", "DUM", "N", "BLOB", "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "MSE", "PHE", "PRO", "SEC", "SER", "THR", "TRP", "TYR", "VAL", "DA", "DG", "DT", "DC", "DU", "A", "G", "T", "C", "U", "HOH", "H20", "WAT");
+filtered_data <- data %>%
+  filter(!res_name %in% excluded_names) %>%
+  filter(!is.na(res_name))
+  
+```
+
+### Filling data gaps
+```{r cleansing_2, message=FALSE}
+replacements <<- filtered_data %>% 
+  select(c(attrib.legal,attrib.target_class),-c("skeleton_data")) %>% 
+  na.omit %>%
+  group_by(res_name) %>% 
+  summarize_all(funs(mean))
+
+
+fill_gaps<- function(id, colName, colVal){
+
+  bad <- is.na(colVal)
+  ids <- id[bad]
+  #vals <- replacements %>% filter( any( res_name %in% ids ) ) # %>% select(!!treat_string_as_col(colName))
+  print(ids)
+  colVal[bad]<- unlist(vals, use.names = FALSE)
+ 
+  return(colVal)
+  
+}
+ids <- filtered_data[,attrib.target_class]
+
+#?mutate
+for (col in colnames(replacements)){
+  column<-filtered_data[,col]
+  bad <- is.na(column)
+  bad_ids = ids[bad]
+  if (sum(bad)==0){
+    next
+  }
+  bad_ids <- data.frame(bad_ids)
+  colnames(bad_ids)<-c(attrib.target_class)
+  vals <- data.frame(bad_ids) %>% left_join(replacements) %>% select(!!treat_string_as_col(col))
+  new_vals <- unlist(vals, use.names = FALSE)
+  filtered_data[bad,col] <- new_vals
+}
+
+filtered_data <- filtered_data %>% replace(is.na(.),0)
+```
+
+## Dataset description
+### Simple statistics
+```{r desc, show, echo=FALSE}
+cat("Number of rows: ",nrow(filtered_data))
+cat("Number of attributes: ",ncol(filtered_data))
+cat("Number of legal attributes: ",length(attrib.legal))
+```
+### Attributes
+```{r desc_attribs, echo=FALSE}
+describe(filtered_data)
+```
+
+
+
