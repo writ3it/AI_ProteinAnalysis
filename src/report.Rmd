@@ -26,23 +26,29 @@ to do
 # Analysis
 
 ## Used R libraries 
-
+- psych - for "describe" function
 - ggplot2 - for visualisations 
 - dplyr - for human-friendly data processing 
+- friendlyeval - for dynamic column selection while dlypr processing
 - DT - for dynamic tables
 - archive - for 7z extraction
 ```{r libs, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
-install.packages("psych")
-
+if (!require("psych")){ install.packages('psych') }
 library(psych)
-
+if (!require("ggplot2")){ install.packages('ggplot2') }
 library(ggplot2)
+if (!require("dplyr")){ install.packages('dplyr') }
 library(dplyr)
+if (!require("DT")){ install.packages('DT') }
 library(DT)
+if (!require("DT")){ 
 devtools::install_github("milesmcbain/friendlyeval")
+}
 library(friendlyeval)
 # needs libarchive-dev
+if (!require("DT")){ 
 devtools::install_github("jimhester/archive")
+}
 library(archive)
 ```
 
