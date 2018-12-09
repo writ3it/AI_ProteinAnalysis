@@ -21,7 +21,9 @@ working_dir <-getwd()
 
 # Summary
 
-to do
+- how to process NAs
+- empty attributes (zeros)
+- correlation pearson
 
 # Analysis
 
@@ -30,8 +32,11 @@ to do
 - ggplot2 - for visualisations 
 - dplyr - for human-friendly data processing 
 - friendlyeval - for dynamic column selection while dlypr processing
+- reshape2 - for very usefull melt function (R implementation is very slow!)
+- shiny - for dynamic correlation chart
 - DT - for dynamic tables
 - archive - for 7z extraction
+- grid,gridExtra - for plot grid
 ```{r libs, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 if (!require("psych")){ install.packages('psych') }
 library(psych)
@@ -45,11 +50,16 @@ if (!require("DT")){
 devtools::install_github("milesmcbain/friendlyeval")
 }
 library(friendlyeval)
+library(reshape2)
 # needs libarchive-dev
 if (!require("DT")){ 
 devtools::install_github("jimhester/archive")
 }
 library(archive)
+library(plotly)
+library(grid)
+if (!require("gridExtra")){ install.packages("gridExtra") }
+library(gridExtra)
 ```
 
 ## Initialization code
@@ -93,6 +103,7 @@ data <- sample
 ### Dataset attributes lists 
 
 ```{r attribs}
+noTopClasses <- 50
 #target class for classification
 attrib.target_class <- "res_name"
 #all attributes
@@ -110,7 +121,7 @@ attrib.res <- "resolution"
 # params
 attrib.params <- c("fo_col","fc_col","weight_col","grid_space","solvent_radius","solvent_opening_radius")
 #uknown columns
-attrib.unknown <- c("blob_coverage","blob_volume_coverage_second","resolution_max_limit","FoFc_square_std","res_coverage","res_volume_coverage","FoFc_mean","FoFc_min","blob_volume_coverage","res_volume_coverage_second","FoFc_std","FoFc_max")
+attrib.unknown <- c("blob_coverage","blob_volume_coverage_second","resolution_max_limit","FoFc_square_std","res_coverage","res_volume_coverage","FoFc_mean","FoFc_min","blob_volume_coverage","res_volume_coverage_second","FoFc_std","FoFc_max","resolution")
 # illegal attribs for classifications
 attrib.illegal <- c(c(
   "title",
@@ -119,22 +130,26 @@ attrib.illegal <- c(c(
   "res_id",
   "chain_id",
   "local_",
-  "weight_col" #is na!
+  "weight_col", #is na!
+  "skeleton_data"
 ),
-attrib.local, #local are illegal,
-attrib.dict, #dicts are illegal,
+#attrib.local, #local are illegal,
+#attrib.dict, #dicts are illegal,
 attrib.unknown,
 attrib.params
 )
 
-attrib.legal<-setdiff(attrib.all, attrib.illegal)
+attrib.legal<-setdiff(attrib.all, c(attrib.illegal,attrib.local, attrib.dict))
+
+attrib.part.shape <- attrib.legal[grepl("_shape_",attrib.legal)]
+attrib.part.density <- attrib.legal[grepl("_density_",attrib.legal)]
 ```
 ## Data cleansing
 
 ### Remove unnecesary ligands (project requirement)
 ```{r cleansing_1}
 excluded_names <- c("UNK", "UNX", "UNL", "DUM", "N", "BLOB", "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "MSE", "PHE", "PRO", "SEC", "SER", "THR", "TRP", "TYR", "VAL", "DA", "DG", "DT", "DC", "DU", "A", "G", "T", "C", "U", "HOH", "H20", "WAT");
-filtered_data <- data %>%
+data.raw <- data %>%
   filter(!res_name %in% excluded_names) %>%
   filter(!is.na(res_name))
   
@@ -142,17 +157,17 @@ filtered_data <- data %>%
 
 ### Filling data gaps
 ```{r cleansing_2, message=FALSE}
-replacements <<- filtered_data %>% 
+replacements <<- data.raw %>% 
   select(c(attrib.legal,attrib.target_class),-c("skeleton_data")) %>% 
   na.omit %>%
   group_by(res_name) %>% 
   summarize_all(funs(mean))
 
-ids <- filtered_data[,attrib.target_class]
+ids <- data.raw[,attrib.target_class]
 
 #?mutate
 for (col in colnames(replacements)){
-  column<-filtered_data[,col]
+  column<-data.raw[,col]
   bad <- is.na(column)
   bad_ids = ids[bad]
   if (sum(bad)==0){
@@ -162,23 +177,210 @@ for (col in colnames(replacements)){
   colnames(bad_ids)<-c(attrib.target_class)
   vals <- data.frame(bad_ids) %>% left_join(replacements) %>% select(!!treat_string_as_col(col))
   new_vals <- unlist(vals, use.names = FALSE)
-  filtered_data[bad,col] <- new_vals
+  data.raw[bad,col] <- new_vals
 }
 
-filtered_data <- filtered_data %>% replace(is.na(.),0)
+data.withoutGaps <- data.raw %>% replace(is.na(.),0)
 ```
 
 ## Dataset description
 ### Simple statistics
 ```{r desc, show, echo=FALSE}
-cat("Number of rows: ",nrow(filtered_data))
-cat("Number of attributes: ",ncol(filtered_data))
-cat("Number of legal attributes: ",length(attrib.legal))
+cat("Number of rows: ",nrow(data.withoutGaps))
+cat("Number of attributes: ",ncol(data.withoutGaps))
+cat("Number of legal attributes: ",length(data.withoutGaps))
 ```
 ### Attributes
 ```{r desc_attribs, echo=FALSE}
-describe(filtered_data)
+describe(data.withoutGaps)
 ```
 
+### Find empty numeric attributes
+```{r removeEmptyColumns}
+stats <- data.withoutGaps %>% select(attrib.legal) %>% summarise_all(funs(min,max))
+attrib.empty <- c()
+for ( col in attrib.legal){
+  max <- stats[1,paste(col,"_max",sep="")]
+  min <- stats[1,paste(col,"_min",sep="")]
+  diff <- max - min
+  if (diff == 0){
+    attrib.empty <- c(attrib.empty,col)
+  }
+}
+```
+
+
+## Processing
+
+### Choose top 50 ligands, number of examples per class
+
+```{r find_top_50}
+top50 <- data.withoutGaps %>% group_by(!!treat_string_as_col(attrib.target_class)) %>% summarize(numberOfExamples = n()) %>% arrange(desc(numberOfExamples)) %>% head(noTopClasses) 
+top50
+top50 <- top50 %>% select(c(attrib.target_class))
+```
+```{r limit_data}
+.topClasses<-unlist(top50[,attrib.target_class],use.names = FALSE)
+data.top50 <- data.withoutGaps %>% filter( !!treat_string_as_col(attrib.target_class) %in% .topClasses )
+data.withoutEmpty <- data.top50 %>% select(-attrib.empty)
+```
+
+### Correlation
+
+```{r correlation}
+
+data.legal <- data.withoutEmpty %>% select(setdiff(attrib.legal,attrib.empty)) 
+correlation <- cor(data.legal)
+```
+```{r presentation}
+melted <- melt(correlation)
+df.cor.mel <- data.frame(melted)  %>% mutate(value = abs(value)) %>% arrange(desc(value))
+
+p<-ggplot(
+      df.cor.mel
+      ,aes(x=Var1,y=Var2, fill=value)) +
+      geom_tile() +
+      scale_fill_gradient(low = "white", high = "brown") +
+      xlab("parameters") +
+      ylab("parameters") + 
+      theme(axis.text.x = element_text(angle = -90, hjust = 1))
+
+ggplotly(p,height=700, width=700)
+
+
+
+```
+
+### Distribution of atoms nad electrons
+```{r distr, echo=FALSE,message=FALSE}
+dist <- data.top50 %>% select(c(attrib.target_class, "local_res_atom_non_h_count","local_res_atom_non_h_electron_sum"))
+mdist <- melt(dist)
+
+format_plot <- function(p,color, title){
+   p+geom_histogram(alpha=0.5, position="identity", aes(y = ..density..), color="black", fill=color) + 
+    scale_y_sqrt() +
+    ggtitle(title) + 
+    xlab("value") + 
+    ylab("sqrt(cardinality)") 
+}
+
+
+p<- ggplot(dist,aes(x=dist$local_res_atom_non_h_count))
+p1 <- format_plot(p,"yellow","Distribution of no_atoms")
+p<- ggplot(dist,aes(x=dist$local_res_atom_non_h_electron_sum))
+p2 <- format_plot(p,"blue","Distribution of no_electrons")
+grid.arrange(p1,p2)
+```
+
+### Analyze part_01 parameters
+
+```{r part_01, echo=FALSE,message=FALSE}
+attrib.part_01 <- attrib.part[grepl("part_01",attrib.part)]
+data <- data.withoutEmpty %>% select(c(attrib.target_class,attrib.part_01))
+parts <- melt(data)
+
+unames <- unlist(unique(parts[,attrib.target_class]))
+uvars <- unlist(unique(parts[,'variable']))
+
+button.names <- lapply(unames, function(name){
+  list(
+    method="restyle",
+    args=list("transforms[0].value",name),
+    label= name
+  )
+})
+
+button.vars <- lapply(uvars, function(v){
+  list(
+    method="restyle",
+    args=list("transforms[1].value",v),
+    label= v
+  )
+})
+
+       
+parts %>% plot_ly(
+                  x=parts$value,
+                  type="histogram",
+                  transforms=list(
+                    list(
+                      type="filter",
+                      target= ~res_name,
+                      orientation = '=',
+                      value = unames[1]
+                    ),
+                     list(
+                      type="filter",
+                      target= ~variable,
+                      orientation = '=',
+                      value = uvars[1]
+                    )
+                  )) %>%
+ 
+  layout(
+    title="Distribution of Values",
+    updatemenus=list(
+      list(
+        type='dropdown',
+        y=0.8,
+        x=-0.1,
+        buttons = button.names
+      ),
+      list(
+        type='dropdown',
+        y=0.6,
+        x=-0.1,
+        buttons = button.vars
+      )
+    ),
+   yaxis = list(
+      title = "Cardinality"
+    ),
+    annotations=list(
+      list(
+        x=-0.27,
+        y=0.85,
+        xref='paper',
+        yref='paper',
+        text="res_name",
+        showarrow=FALSE
+      ),
+      list(
+        x=-0.27,
+        y=0.65,
+        xref='paper',
+        yref='paper',
+        text="parameter",
+        showarrow=FALSE
+      )
+    )
+  )
+
+
+```
+### The 10 most incompatible classes
+I understand by incmpatible sum(abs(local*,dict*))
+```{r incomp, echo=FALSE}
+f <- data.withoutEmpty %>% 
+  select(!!treat_string_as_col(attrib.target_class),
+         local_res_atom_non_h_count,
+         dict_atom_non_h_count,
+         dict_atom_non_h_electron_sum,
+         local_res_atom_non_h_electron_sum) %>%
+  arrange(res_name)
+
+f<-f %>%
+  group_by(!!treat_string_as_col(attrib.target_class)) %>%
+  summarize( 
+    atoms = sum(abs(local_res_atom_non_h_count-dict_atom_non_h_count)),
+    electrons = sum(abs(local_res_atom_non_h_electron_sum-dict_atom_non_h_electron_sum))
+    )
+
+df.atoms <- f%>% select(!!treat_string_as_col(attrib.target_class),atoms) %>% arrange(desc(atoms)) %>% head(10)
+df.electrons <- f%>% select(!!treat_string_as_col(attrib.target_class),electrons) %>% arrange(desc(electrons)) %>% head(10)
+prettyTable(df.atoms)
+prettyTable(df.electrons)
+  
+```
 
 
