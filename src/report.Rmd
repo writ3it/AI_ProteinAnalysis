@@ -3,7 +3,7 @@ title: "Basic analysis of ligands"
 author: "writ3it"
 date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: 
-  html_document: 
+  html_document:  
     highlight: kate
     number_sections: yes
     theme: united
@@ -11,7 +11,9 @@ output:
     toc_float: true
 params:
   source_url: "https://zenodo.org/record/1040778/files/all_summary.7z"
+  csv_name: "big_summary"
   zipped: true
+  isSample: true
 ---
 
 ```{r setup, include=FALSE}
@@ -21,50 +23,94 @@ working_dir <-getwd()
 
 # Summary
 
-- how to process NAs
-- empty attributes (zeros)
-- correlation pearson
+## Dataset
+Master dataset contains 591043 records. First record is a header. Each next row contains description of ligand computed from PDB database. Contains ligands queried and described in the Kowiel et al. paper "Automatic recognition of ligands in electron density by machine learning methods". 
+
+Download [all_summary.7z](https://zenodo.org/record/1040778/files/all_summary.7z")
+
+### Smaller dataset
+
+If you would like to test code on smaller piece you can create it quickly with code:
+```{bash, eval=FALSE}
+#replace 100K with any number of rows
+head -n 100K data/all_summary.csv > data/big_summary.csv
+```
+
+This report is created with parameterized Rmarkdown doc. When isSample=true for rendering will be used first 2K rows.
+
+## Analysis
+
+Description of ligand contains few diffrent datatypes. These are mainly numbers like descriptive statistics of geometry. Because each ligand has diffrend shape some statistics don't appear. Some attributes contains data packed at JSON format. res_name attribute contains target class which is ligand name. Description of geometry need some knowladge about crystallography and PDB data formats. My knowladge is little so analysis isn't big succes, but example of work with R machine learning and analysis tools. 
+
+### Data
+
+
+
+
+## Rendering
+
+Report rendering command:
+```{bash, eval=FALSE}
+export RSTUDIO_PANDOC=/usr/lib/rstudio/bin/pandoc
+Rscript src/build.r
+```
+
+
+
 
 # Analysis
 
 ## Used R libraries 
-- psych - for "describe" function
-- ggplot2 - for visualisations 
-- dplyr - for human-friendly data processing 
-- friendlyeval - for dynamic column selection while dlypr processing
-- reshape2 - for very usefull melt function (R implementation is very slow!)
-- shiny - for dynamic correlation chart
-- DT - for dynamic tables
+
+- psych - nice, describe function
+- ggplot2 - usefull api to create plots
+- plotly - ggplot2 is good but plotly plots are more interactive and flexy
+- dplyr - human-friendly data processing api
+- friendlyeval - dynamic (by string) column selection while dlypr processing
+- reshape2 - very usefull melt function
+- DT - "DataTable" widget which makes tables powerfull
 - archive - for 7z extraction
 - grid,gridExtra - for plot grid
+- caret - ML library, need dependencies = 'obliqueRF','logicFS'
+
+
 ```{r libs, echo=FALSE, results='hide', message=FALSE, warning=FALSE}
 if (!require("psych")){ install.packages('psych') }
 library(psych)
+
 if (!require("ggplot2")){ install.packages('ggplot2') }
 library(ggplot2)
+
 if (!require("dplyr")){ install.packages('dplyr') }
 library(dplyr)
+
 if (!require("DT")){ install.packages('DT') }
 library(DT)
-if (!require("DT")){ 
-devtools::install_github("milesmcbain/friendlyeval")
-}
+
+if (!require("DT")){ devtools::install_github("milesmcbain/friendlyeval") }
 library(friendlyeval)
+
 library(reshape2)
-# needs libarchive-dev
-if (!require("DT")){ 
-devtools::install_github("jimhester/archive")
-}
+
+if (!require("archive")){  devtools::install_github("jimhester/archive")}
 library(archive)
+
 library(plotly)
 library(grid)
+
 if (!require("gridExtra")){ install.packages("gridExtra") }
 library(gridExtra)
+if (!require("caret")){ install.packages("caret",dependencies=c("logicFS")) }
+library(caret)
 ```
 
 ## Initialization code
+For the repeatability of the analysis
 ```{r init}
-set.seed(23) # for random functions
+set.seed(23) 
+```
+
+```{r dtable, echo=FALSE}
 prettyTable <- function(table_df, round_columns=numeric(), round_digits=2) {
     DT::datatable(table_df, style="bootstrap", filter = "top", rownames = FALSE, extensions = "Buttons", options = list(dom = 'Bfrtip', buttons = c('copy', 'csv', 'excel', 'pdf', 'print'))) %>%
     formatRound(round_columns, round_digits)
@@ -74,9 +120,10 @@ prettyTable <- function(table_df, round_columns=numeric(), round_digits=2) {
 ## Data loading
 
 ### Downloading dataset
+First step is download dataset. It's large so will be "cached" to use in fututre.
 ```{r loading}
 tempFilePath <- paste(working_dir,"/../data/temp.7z",sep='')
-dataFilePath <- paste(working_dir,"/../data/all_summary.csv",sep='')
+dataFilePath <- paste(working_dir,"/../data/",params$csv_name,".csv",sep='')
 if (!file.exists(dataFilePath)){
   message("Downloading data from: ",params$source_url);
   download.file(params$source_url,tempFilePath)
@@ -92,36 +139,68 @@ if (!file.exists(dataFilePath)){
 
 
 ### Reading sample data
+Next, load data to memory. In next code examples data will be sotred at **data** variable.
 ```{r sample_data}
-sampleRowsNo <- 1000
-sample <- read.table(dataFilePath,header = TRUE, nrows = sampleRowsNo, sep = ";");
+#number of rows
+sampleRowsNo <- 2000
+targetRowsNo <- 600000
+
+# heuristic of attributes datatypes, this increase performance of main data loading
+sample <- read.table(dataFilePath, nrows=sampleRowsNo, sep = ";", header = TRUE, na.strings = "nan",  quote = "'",  )
+classes <- sapply(sample,class)
+# need some correction in datatypes list 
+classes <- ifelse(classes == "integer","numeric",classes)
+classes["res_id"]<-"character"
+# if should be, load all data
+if (!params$isSample){
+  sample <-read.table(dataFilePath, header = TRUE,  nrows=targetRowsNo, sep = ";", quote = "'", colClasses=classes, na.strings = "nan",                     comment.char = "")
+}
+# will be usefull
+attrib.classes <- classes
 ```
 ```{r init_data,echo=FALSE}
 data <- sample
 ```
 
 ### Dataset attributes lists 
-
+For next parts necessary is to define some information about data, attributes and paramteres.
 ```{r attribs}
+# number of most frequently ligands which will be analized 
 noTopClasses <- 50
-#target class for classification
+
+# target class for classification
 attrib.target_class <- "res_name"
+
+# target attributes for regression
+attrib.reg.targets <- c("dict_atom_non_h_count","dict_atom_non_h_electron_sum")
+
 #all attributes
 attrib.all <- colnames(data)
+
 #"local" attributes
-attrib.local <- attrib.all[ grepl("local_", attrib.all)]
+attrib.local <- c( attrib.all[ grepl("local_res_", attrib.all)],'local_cut_by_mainchain_volume','local_near_cut_count_C','local_near_cut_count_other','local_near_cut_count_S','local_near_cut_count_O','local_near_cut_count_N')
+
 # dict_atom attribs
 attrib.dict <- attrib.all[grepl("dict_atom_", attrib.all)]
+
 # parts 
 attrib.part <- attrib.all[grepl("part_",attrib.all)]
+
+# parts_01
+attrib.part_01 <- attrib.all[grepl("part_01_",attrib.all)]
+
 # skeleton
 attrib.skeleton <- attrib.all[grepl("skeleton_",attrib.all)]
+
 # resolution
 attrib.res <- "resolution"
+
 # params
 attrib.params <- c("fo_col","fc_col","weight_col","grid_space","solvent_radius","solvent_opening_radius")
-#uknown columns
+
+# uknown columns
 attrib.unknown <- c("blob_coverage","blob_volume_coverage_second","resolution_max_limit","FoFc_square_std","res_coverage","res_volume_coverage","FoFc_mean","FoFc_min","blob_volume_coverage","res_volume_coverage_second","FoFc_std","FoFc_max","resolution")
+
 # illegal attribs for classifications
 attrib.illegal <- c(c(
   "title",
@@ -129,112 +208,160 @@ attrib.illegal <- c(c(
   "res_name",
   "res_id",
   "chain_id",
-  "local_",
   "weight_col", #is na!
   "skeleton_data"
 ),
-#attrib.local, #local are illegal,
-#attrib.dict, #dicts are illegal,
 attrib.unknown,
 attrib.params
 )
 
-attrib.legal<-setdiff(attrib.all, c(attrib.illegal,attrib.local, attrib.dict))
+# attribs for experiments
+attrib.exp_01 <- c("local_res_atom_non_h_count","local_res_atom_non_h_electron_sum")
+attrib.exp_02 <- c("local_res_atom_non_h_count","dict_atom_non_h_count","dict_atom_non_h_electron_sum","local_res_atom_non_h_electron_sum")
 
+# illegal attributes but needed 
+attrib.trusted <- c(attrib.exp_01  , attrib.part_01,attrib.exp_02)
+
+# legal attributes 
+attrib.legal<-c(attrib.trusted,setdiff(attrib.all, c(attrib.illegal,attrib.local, attrib.dict)))
+
+# legal numeric attributes
+.types <- attrib.classes[attrib.legal]
+attrib.legal.numeric <- names(.types)[.types=="numeric"]
+
+# shape attributes
 attrib.part.shape <- attrib.legal[grepl("_shape_",attrib.legal)]
+
+# density attributes
 attrib.part.density <- attrib.legal[grepl("_density_",attrib.legal)]
+
+# excluded ligands
+excluded_names <- c("UNK", "UNX", "UNL", "DUM", "N", "BLOB", "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "MSE", "PHE", "PRO", "SEC", "SER", "THR", "TRP", "TYR", "VAL", "DA", "DG", "DT", "DC", "DU", "A", "G", "T", "C", "U", "HOH", "H20", "WAT");
 ```
 ## Data cleansing
 
 ### Remove unnecesary ligands (project requirement)
 ```{r cleansing_1}
-excluded_names <- c("UNK", "UNX", "UNL", "DUM", "N", "BLOB", "ALA", "ARG", "ASN", "ASP", "CYS", "GLN", "GLU", "GLY", "HIS", "ILE", "LEU", "LYS", "MET", "MSE", "PHE", "PRO", "SEC", "SER", "THR", "TRP", "TYR", "VAL", "DA", "DG", "DT", "DC", "DU", "A", "G", "T", "C", "U", "HOH", "H20", "WAT");
-data.raw <- data %>%
-  filter(!res_name %in% excluded_names) %>%
-  filter(!is.na(res_name))
-  
-```
-
-### Filling data gaps
-```{r cleansing_2, message=FALSE}
-replacements <<- data.raw %>% 
-  select(c(attrib.legal,attrib.target_class),-c("skeleton_data")) %>% 
-  na.omit %>%
-  group_by(res_name) %>% 
-  summarize_all(funs(mean))
-
-ids <- data.raw[,attrib.target_class]
-
-#?mutate
-for (col in colnames(replacements)){
-  column<-data.raw[,col]
-  bad <- is.na(column)
-  bad_ids = ids[bad]
-  if (sum(bad)==0){
-    next
-  }
-  bad_ids <- data.frame(bad_ids)
-  colnames(bad_ids)<-c(attrib.target_class)
-  vals <- data.frame(bad_ids) %>% left_join(replacements) %>% select(!!treat_string_as_col(col))
-  new_vals <- unlist(vals, use.names = FALSE)
-  data.raw[bad,col] <- new_vals
-}
-
-data.withoutGaps <- data.raw %>% replace(is.na(.),0)
-```
-
-## Dataset description
-### Simple statistics
-```{r desc, show, echo=FALSE}
-cat("Number of rows: ",nrow(data.withoutGaps))
-cat("Number of attributes: ",ncol(data.withoutGaps))
-cat("Number of legal attributes: ",length(data.withoutGaps))
-```
-### Attributes
-```{r desc_attribs, echo=FALSE}
-describe(data.withoutGaps)
+data <- data %>%
+        filter(!res_name %in% excluded_names) %>%
+        filter(!is.na(res_name))
 ```
 
 ### Find empty numeric attributes
+Some empty data should be presented in part_01 charts, so it will be removed in future.
 ```{r removeEmptyColumns}
-stats <- data.withoutGaps %>% select(attrib.legal) %>% summarise_all(funs(min,max))
-attrib.empty <- c()
-for ( col in attrib.legal){
-  max <- stats[1,paste(col,"_max",sep="")]
-  min <- stats[1,paste(col,"_min",sep="")]
-  diff <- max - min
-  if (diff == 0){
-    attrib.empty <- c(attrib.empty,col)
+
+# list empty attributes
+stats <- data %>% select(attrib.legal.numeric) %>% summarise_all(funs(min,max))
+attrib.empty <- lapply(attrib.legal,function(col){
+  .max <- stats[1,paste(col,"_max",sep="")]
+  .min <- stats[1,paste(col,"_min",sep="")]
+  if (is.na(.max) || is.na(.min) || .max == .min){
+   
+    return (col)
   }
+  return ()
+})
+attrib.empty[sapply(attrib.empty,is.null)]<-NULL
+```
+
+### Filling data na with means
+```{r cleansing_2, message=FALSE}
+
+#calculate means
+replacements <<- data %>% 
+  select(c(attrib.legal,attrib.target_class),-c("skeleton_data")) %>% 
+  na.omit %>%
+  group_by(!!treat_string_as_col(attrib.target_class)) %>% 
+  summarize_all(funs(mean))
+
+ids <- data[,attrib.target_class]
+
+# fill NA with means
+for (col in colnames(replacements)){
+  column<-data[,col]
+  badidx <- is.na(column)
+  if (sum(badidx)==0){
+    next
+  }
+  
+  bad_ids <- data.frame(ids[badidx])
+  colnames(bad_ids)<-c(attrib.target_class)
+  vals <- data.frame(bad_ids) %>% left_join(replacements, by = attrib.target_class) %>% select(!!treat_string_as_col(col))
+  new_vals <- unlist(vals, use.names = FALSE)
+  data[badidx,col] <- new_vals
 }
+
+# replace other na
+data <- data %>% replace(is.na(.),0)
+```
+
+### Limit data with legal attribs
+
+```{r legal}
+data <- data %>% select_(.dots=c(attrib.target_class, attrib.legal))
+```
+
+## Dataset description
+
+### Size of dataset
+```{r desc, show, echo=FALSE}
+print(paste("Number of rows: ",nrow(data)))
+print(paste("Number of attributes: ",ncol(data)))
+print(paste("Number of legal attributes: ",length(attrib.legal)))
+print(paste("Number of legal numeric attributes: ",length(intersect(attrib.legal,attrib.legal.numeric))))
+```
+### Attributes
+```{r desc_attribs, echo=FALSE}
+describe(data)
 ```
 
 
-## Processing
+
+
+# Analysis
 
 ### Choose top 50 ligands, number of examples per class
 
 ```{r find_top_50}
-top50 <- data.withoutGaps %>% group_by(!!treat_string_as_col(attrib.target_class)) %>% summarize(numberOfExamples = n()) %>% arrange(desc(numberOfExamples)) %>% head(noTopClasses) 
-top50
-top50 <- top50 %>% select(c(attrib.target_class))
-```
-```{r limit_data}
+top50 <- data %>% 
+          group_by(!!treat_string_as_col(attrib.target_class)) %>% 
+          summarize(numberOfExamples = n()) %>% 
+          arrange(desc(numberOfExamples)) %>% 
+          head(noTopClasses) 
+
+prettyTable(top50)
+
 .topClasses<-unlist(top50[,attrib.target_class],use.names = FALSE)
-data.top50 <- data.withoutGaps %>% filter( !!treat_string_as_col(attrib.target_class) %in% .topClasses )
-data.withoutEmpty <- data.top50 %>% select(-attrib.empty)
+data <- data %>% filter( !!treat_string_as_col(attrib.target_class) %in% .topClasses )
 ```
+
+### Split data to trainData and labels
+
+```{r split}
+
+data.train <- data %>% select_(.dots=c(attrib.exp_02,setdiff(colnames(data),c(attrib.exp_01,attrib.empty,attrib.target_class,attrib.illegal,attrib.local, attrib.dict))))
+.labels <- data %>% select_(.dots=c(attrib.target_class)) %>% droplevels()
+data.labels <- .labels[,attrib.target_class]
+```
+
+### Remove zero variantion
+
+```{r zero_var}
+zv <- apply(data.train, 2, function(x) length(unique(x)) == 1)
+data.train <- data.train[, !zv]
+```
+
 
 ### Correlation
-
+Calculate correlation
 ```{r correlation}
-
-data.legal <- data.withoutEmpty %>% select(setdiff(attrib.legal,attrib.empty)) 
-correlation <- cor(data.legal)
+correlation <- cor(data.train,method="spearman")
+correlation.melted <- melt(correlation)
 ```
-```{r presentation}
-melted <- melt(correlation)
-df.cor.mel <- data.frame(melted)  %>% mutate(value = abs(value)) %>% arrange(desc(value))
+Correlation on heat map looks like chart below:
+```{r presentation,echo=FALSE}
+df.cor.mel <- data.frame(correlation.melted)  %>% mutate(value = abs(value)) %>% arrange(desc(value))
 
 p<-ggplot(
       df.cor.mel
@@ -245,15 +372,12 @@ p<-ggplot(
       ylab("parameters") + 
       theme(axis.text.x = element_text(angle = -90, hjust = 1))
 
-ggplotly(p,height=700, width=700)
-
-
-
+ggplotly(p,height=600, width=700)
 ```
 
 ### Distribution of atoms nad electrons
 ```{r distr, echo=FALSE,message=FALSE}
-dist <- data.top50 %>% select(c(attrib.target_class, "local_res_atom_non_h_count","local_res_atom_non_h_electron_sum"))
+dist <- data %>% select_(.dots=c(attrib.target_class, "local_res_atom_non_h_count","local_res_atom_non_h_electron_sum"))
 mdist <- melt(dist)
 
 format_plot <- function(p,color, title){
@@ -273,14 +397,14 @@ grid.arrange(p1,p2)
 ```
 
 ### Analyze part_01 parameters
+To explore information hidden in structure of ligand preview distribution of values.
 
 ```{r part_01, echo=FALSE,message=FALSE}
-attrib.part_01 <- attrib.part[grepl("part_01",attrib.part)]
-data <- data.withoutEmpty %>% select(c(attrib.target_class,attrib.part_01))
-parts <- melt(data)
+parts.data <- data %>% select(c(attrib.target_class,attrib.part_01))
+parts.melted <- melt(parts.data)
 
-unames <- unlist(unique(parts[,attrib.target_class]))
-uvars <- unlist(unique(parts[,'variable']))
+unames <- unlist(unique(parts.melted[,attrib.target_class]))
+uvars <- unlist(unique(parts.melted[,'variable']))
 
 button.names <- lapply(unames, function(name){
   list(
@@ -299,8 +423,8 @@ button.vars <- lapply(uvars, function(v){
 })
 
        
-parts %>% plot_ly(
-                  x=parts$value,
+parts.melted %>% plot_ly(
+                  x=~value,
                   type="histogram",
                   transforms=list(
                     list(
@@ -355,13 +479,11 @@ parts %>% plot_ly(
       )
     )
   )
-
-
 ```
 ### The 10 most incompatible classes
 I understand by incmpatible sum(abs(local*,dict*))
 ```{r incomp, echo=FALSE}
-f <- data.withoutEmpty %>% 
+f <- data %>% 
   select(!!treat_string_as_col(attrib.target_class),
          local_res_atom_non_h_count,
          dict_atom_non_h_count,
@@ -382,5 +504,131 @@ prettyTable(df.atoms)
 prettyTable(df.electrons)
   
 ```
+
+
+# Machine Learning
+
+## Predict number of electrons or atoms with regression
+
+```{r regresion, echo=FALSE}
+treshold <- 0.4
+partition <- 0.9
+ctrl <- trainControl(
+  method = "repeatedcv",
+  number = 2,
+  repeats = 5
+)
+
+for (target in attrib.reg.targets){
+  print("dict_atom_non_h_count" %in% colnames(correlation.melted))
+  features <- correlation.melted %>% 
+    filter(Var1 == target & Var2 != target) %>% 
+    filter(value >= treshold | value <= (-treshold) ) %>% 
+    mutate(value = abs(value)) %>% arrange(desc(value)) %>% 
+    head(20)
+
+  .data <- data.train  %>% select(c(features$Var2,target))
+  inTraining <- createDataPartition(y = .data[,target],p=partition, list=FALSE )
+  training <- .data[inTraining,]
+  testing <- .data[-inTraining,]
+  if (target == "dict_atom_non_h_count"){
+  fit <- train( dict_atom_non_h_count  ~ . ,
+               data=training,
+               method="lm",
+               metric="RMSE",
+               trControl = ctrl,
+                tuneGrid = data.frame(intercept = seq(0,2,by=0.5))
+                )
+    
+    rfClasses <- predict(fit, newdata = testing)
+    print(ggplot(fit) + ggtitle(target)+ theme_bw())
+    rmse<-RMSE(pred = rfClasses,obs = testing$dict_atom_non_h_count)
+    r2<-R2(pred=rfClasses, obs=testing$dict_atom_non_h_count)
+    print(paste(target," RMSE= ",rmse))
+    print(paste(target," RSquared= ",r2))
+  } else {
+      fit <- train( dict_atom_non_h_electron_sum  ~ . ,
+                 data=training,
+                 method="lm",
+                 metric="RMSE",
+                 trControl = ctrl,
+                 tuneGrid = data.frame(intercept = seq(0,2,by=0.5))
+                 )
+    print(ggplot(fit) + ggtitle(target)+ theme_bw())
+    rfClasses <- predict(fit, newdata = testing)
+    rmse<-RMSE(pred = rfClasses,obs = testing$dict_atom_non_h_electron_sum)
+    r2<-R2(pred=rfClasses, obs=testing$dict_atom_non_h_electron_sum)
+    print(paste(target," RMSE= ",rmse))
+    print(paste(target," RSquared= ",r2))
+  }
+}
+```
+
+## Predict ligand name
+
+### Remove strong correlated attributes
+```{r remove_strongs}
+strongCorrelated <- findCorrelation(correlation,cutoff=0.79)
+cn <- colnames(correlation)
+featuresNames <- cn[strongCorrelated]
+data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),featuresNames))
+```
+### Remove zero var attributes
+```{r classification_select_features}
+zeroVarNames<-nearZeroVar(data.train,names=TRUE,foreach=TRUE,allowParallel=TRUE)
+data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarNames))
+```
+### Training
+```{r classification}
+  partition<-0.8
+  inTraining <- createDataPartition(y = data.labels,p=partition, list=FALSE )
+  
+  training <- data.train[inTraining,]
+  ytraining <- data.labels[inTraining]
+  testing <- data.train[-inTraining,]
+  ytesting <- data.labels[-inTraining]
+  
+  folds<-ncol(training)
+  cvIndex <- createFolds(factor(ytraining), folds, returnTrain = TRUE)
+  ctrl <- trainControl(index = cvIndex,
+               method = 'repeatedcv', 
+               number = folds/2,
+               allowParallel=TRUE,
+               verboseIter=FALSE,
+               returnData = FALSE,
+               repeats = 2
+               )
+  grid <- expand.grid(
+    mtry = seq(1,floor(sqrt(folds)),by=1)
+  )
+  
+  fit <- train( x = training,
+                y = ytraining,
+                method="parRF",
+                preProcess = c("scale", "center"),
+                trControl = ctrl,
+                metric="Accuracy",
+                maximize = TRUE,
+                tuneGrid=grid,
+                importance=TRUE,
+                ntree=50
+                )
+
+  print(fit)
+```
+### Predict
+```{r predict}
+  rfClasses <- predict(fit, testing)
+  confusionMatrix(data = rfClasses, ytesting)
+```
+
+### Accuracy
+```{r acc}
+  print(ggplot(fit) + ggtitle("Accurency ligands prediction")+ theme_bw())
+```
+
+
+
+
 
 
