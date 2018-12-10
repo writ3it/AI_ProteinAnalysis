@@ -17,7 +17,7 @@ params:
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE)
+knitr::opts_chunk$set(echo = TRUE, cache=FALSE)
 working_dir <-getwd()
 ```
 
@@ -27,6 +27,13 @@ working_dir <-getwd()
 Master dataset contains 591043 records. First record is a header. Each next row contains description of ligand computed from PDB database. Contains ligands queried and described in the Kowiel et al. paper "Automatic recognition of ligands in electron density by machine learning methods". 
 
 Download [all_summary.7z](https://zenodo.org/record/1040778/files/all_summary.7z")
+
+```{r dataset_size}
+#number of rows in sample mode
+sampleRowsNo <- 4000
+# number of rows in main dataset (with excess)
+targetRowsNo <- 600000
+```
 
 ### Smaller dataset
 
@@ -40,7 +47,32 @@ This report is created with parameterized Rmarkdown doc. When isSample=true for 
 
 ## Analysis
 
-Description of ligand contains few diffrent datatypes. These are mainly numbers like descriptive statistics of geometry. Because each ligand has diffrend shape some statistics don't appear. Some attributes contains data packed at JSON format. res_name attribute contains target class which is ligand name. Description of geometry need some knowladge about crystallography and PDB data formats. My knowladge is little so analysis isn't big succes, but example of work with R machine learning and analysis tools. 
+Description of ligand contains few diffrent datatypes. These are mainly numerics like descriptive statistics of geometry. Because each ligand has diffrend shape some statistics don't appear. Some attributes contains data packed at JSON format. res_name attribute contains target class which is ligand name. Description of geometry need some knowladge about crystallography and PDB data formats. My knowladge is little therefore *analysis isn't big succes*, but example of work with R machine learning and analysis tools. 
+
+### Correlation method
+While analysis will be use spearman correlation because distribution of values (see charts below) and a large number of attributes suggest me that attributes doesn't linear correlated. Therefore spearman method will be a better choice.
+```{r cor_method}
+cor_method<-"spearman"
+```
+
+### Regression
+
+Regression analysis in this report is an good admission to proper classification. The following parameters have been selected experimentally. Cutoff is an treshold for attributes spearman factor. Because dataset is big, training set will be 90% of whole. Choosed algorithm is Linear Regression which is standard algorithm for numeric prediction.
+```{r reg_params}
+cutoff.reg<-0.4
+part.reg<-0.9
+```
+
+### Classification
+The following parameters have been selected experimentally. Cutoff is strong depended on number of attributes. (Theoretically, for data form physical experiments, the higher is better). Dataset will be partitioned like 80% - training set 20% testing set with repeated k-folds cross validation. Method of training controll is dictated by distribution of records in classes.
+
+I suppose that number of atoms or electrons will improve classification therefore dataset will be splitted. On first part will be trained atom number prediction model, on second part data will be completed with predicition. Next, second part will be used as master data for classification (next splits etc.).
+```{r cla_params}
+split<-0.2 # atoms prediction parts
+cutoff.cla<-0.79
+part.cla<-0.8
+ntree<-50
+```
 
 ## Rendering
 
@@ -53,7 +85,7 @@ Rscript src/build.r
 
 
 
-# Analysis
+# Data preparation
 
 ## Used R libraries 
 
@@ -136,9 +168,6 @@ if (!file.exists(dataFilePath)){
 ### Reading sample data
 Next, load data to memory. In next code examples data will be sotred at **data** variable.
 ```{r sample_data}
-#number of rows
-sampleRowsNo <- 2000
-targetRowsNo <- 600000
 
 # heuristic of attributes datatypes, this increase performance of main data loading
 sample <- read.table(dataFilePath, nrows=sampleRowsNo, sep = ";", header = TRUE, na.strings = "nan",  quote = "'",  )
@@ -245,27 +274,19 @@ data <- data %>%
 ### Find empty numeric attributes
 Some empty data should be presented in part_01 charts, so it will be removed in future.
 ```{r removeEmptyColumns}
-
 # list empty attributes
-stats <- data %>% select(attrib.legal.numeric) %>% summarise_all(funs(min,max))
-attrib.empty <- lapply(attrib.legal,function(col){
-  .max <- stats[1,paste(col,"_max",sep="")]
-  .min <- stats[1,paste(col,"_min",sep="")]
-  if (is.na(.max) || is.na(.min) || .max == .min){
-   
-    return (col)
-  }
-  return ()
-})
-attrib.empty[sapply(attrib.empty,is.null)]<-NULL
+stats <- data %>% select(attrib.legal.numeric) 
+max_min <- data_frame(max = apply(stats, 2, max),
+                      min = apply(stats, 2, min),
+                      columns = names(stats))
+attrib.empty <- max_min$columns[max_min$min==max_min$max]
 ```
 
 ### Filling data na with means
 ```{r cleansing_2, message=FALSE}
-
 #calculate means
 replacements <<- data %>% 
-  select(c(attrib.legal,attrib.target_class),-c("skeleton_data")) %>% 
+  select(c(attrib.legal,attrib.target_class)) %>% 
   na.omit %>%
   group_by(!!treat_string_as_col(attrib.target_class)) %>% 
   summarize_all(funs(mean))
@@ -335,7 +356,7 @@ data <- data %>% filter( !!treat_string_as_col(attrib.target_class) %in% .topCla
 
 ```{r split}
 
-data.train <- data %>% select_(.dots=c(attrib.exp_02,setdiff(colnames(data),c(attrib.exp_01,attrib.empty,attrib.target_class,attrib.illegal,attrib.local, attrib.dict))))
+data.train <- data %>% select_(.dots=setdiff(colnames(data),attrib.target_class))
 .labels <- data %>% select_(.dots=c(attrib.target_class)) %>% droplevels()
 data.labels <- .labels[,attrib.target_class]
 ```
@@ -347,11 +368,10 @@ zv <- apply(data.train, 2, function(x) length(unique(x)) == 1)
 data.train <- data.train[, !zv]
 ```
 
-
 ### Correlation
 Calculate correlation
 ```{r correlation}
-correlation <- cor(data.train,method="spearman")
+correlation <- cor(data.train,method=cor_method)
 correlation.melted <- melt(correlation)
 ```
 Correlation on heat map looks like chart below:
@@ -370,7 +390,7 @@ p<-ggplot(
 ggplotly(p,height=600, width=700)
 ```
 
-### Distribution of atoms nad electrons
+### Distribution of atoms and electrons
 ```{r distr, echo=FALSE,message=FALSE}
 dist <- data %>% select_(.dots=c(attrib.target_class, "local_res_atom_non_h_count","local_res_atom_non_h_electron_sum"))
 mdist <- melt(dist)
@@ -497,17 +517,25 @@ df.atoms <- f%>% select(!!treat_string_as_col(attrib.target_class),atoms) %>% ar
 df.electrons <- f%>% select(!!treat_string_as_col(attrib.target_class),electrons) %>% arrange(desc(electrons)) %>% head(10)
 prettyTable(df.atoms)
 prettyTable(df.electrons)
-  
 ```
 
 
 # Machine Learning
 
+## Split data
+```{r splitting}
+splitting <- createDataPartition(y = data.labels,p=split, list=FALSE )
+```
+### Remove illegal attributes before regression
+```{r remove_reg1}
+data.train <- data.train %>% select_(.dots=unique(c(setdiff(colnames(data.train),c( attrib.exp_01 )),attrib.exp_02)))
+```
 ## Predict number of electrons or atoms with regression
 
-```{r regresion, echo=FALSE}
-treshold <- 0.4
-partition <- 0.9
+```{r regresion, echo=FALSE,messages=FALSE,warning=FALSE}
+treshold <- cutoff.reg
+partition <- part.reg
+
 ctrl <- trainControl(
   method = "repeatedcv",
   number = 2,
@@ -515,7 +543,6 @@ ctrl <- trainControl(
 )
 
 for (target in attrib.reg.targets){
-  print("dict_atom_non_h_count" %in% colnames(correlation.melted))
   features <- correlation.melted %>% 
     filter(Var1 == target & Var2 != target) %>% 
     filter(value >= treshold | value <= (-treshold) ) %>% 
@@ -523,11 +550,13 @@ for (target in attrib.reg.targets){
     head(20)
 
   .data <- data.train  %>% select(c(features$Var2,target))
+  #use only first part of data!
+  .data <- .data[splitting,]
   inTraining <- createDataPartition(y = .data[,target],p=partition, list=FALSE )
   training <- .data[inTraining,]
   testing <- .data[-inTraining,]
   if (target == "dict_atom_non_h_count"){
-  fit <- train( dict_atom_non_h_count  ~ . ,
+  fit_atoms <- train( dict_atom_non_h_count  ~ . ,
                data=training,
                method="lm",
                metric="RMSE",
@@ -535,22 +564,22 @@ for (target in attrib.reg.targets){
                 tuneGrid = data.frame(intercept = seq(0,2,by=0.5))
                 )
     
-    rfClasses <- predict(fit, newdata = testing)
-    print(ggplot(fit) + ggtitle(target)+ theme_bw())
+    rfClasses <- predict(fit_atoms, newdata = testing)
+    print(ggplot(fit_atoms) + ggtitle(target)+ theme_bw())
     rmse<-RMSE(pred = rfClasses,obs = testing$dict_atom_non_h_count)
     r2<-R2(pred=rfClasses, obs=testing$dict_atom_non_h_count)
     print(paste(target," RMSE= ",rmse))
     print(paste(target," RSquared= ",r2))
   } else {
-      fit <- train( dict_atom_non_h_electron_sum  ~ . ,
+      fit_electrons <- train( dict_atom_non_h_electron_sum  ~ . ,
                  data=training,
                  method="lm",
                  metric="RMSE",
                  trControl = ctrl,
                  tuneGrid = data.frame(intercept = seq(0,2,by=0.5))
                  )
-    print(ggplot(fit) + ggtitle(target)+ theme_bw())
-    rfClasses <- predict(fit, newdata = testing)
+    print(ggplot(fit_electrons) + ggtitle(target)+ theme_bw())
+    rfClasses <- predict(fit_electrons, newdata = testing)
     rmse<-RMSE(pred = rfClasses,obs = testing$dict_atom_non_h_electron_sum)
     r2<-R2(pred=rfClasses, obs=testing$dict_atom_non_h_electron_sum)
     print(paste(target," RMSE= ",rmse))
@@ -561,9 +590,24 @@ for (target in attrib.reg.targets){
 
 ## Predict ligand name
 
+### Remove illegal attributes after regression
+```{r remove_reg}
+data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),c( attrib.exp_02,attrib.local, attrib.dict )))
+```
+
+### Predict number of atoms
+```{r trick2} 
+data.train <- data.train[-splitting,]
+data.labels <- data.labels[-splitting]
+estimated_atoms <-  predict(fit_atoms, data.train)
+estimated_electrons <-  predict(fit_electrons, newdata = data.train)
+data.train$estimated_atoms <- estimated_atoms
+
+```
+
 ### Remove strong correlated attributes
 ```{r remove_strongs}
-strongCorrelated <- findCorrelation(correlation,cutoff=0.79)
+strongCorrelated <- findCorrelation(correlation,cutoff=cutoff.cla)
 cn <- colnames(correlation)
 featuresNames <- cn[strongCorrelated]
 data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),featuresNames))
@@ -573,9 +617,26 @@ data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),features
 zeroVarNames<-nearZeroVar(data.train,names=TRUE,foreach=TRUE,allowParallel=TRUE)
 data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarNames))
 ```
+### Remove top incompatibile classes
+```{r top_inc}
+toRemove <- unique(append(as.character(df.atoms$res_name),as.character(df.electrons$res_name)))
+idx<-data.labels %in% toRemove
+data.train <- data.train[-idx,]
+data.labels<- data.labels[-idx]
+```
+### Training attributes, ordering
+```{r tra_attr, echo=FALSE}
+#sort attributes with sds for preview
+colSds = sqrt(diag(cov(data.train)))
+colorder<-colSds[order(unlist(colSds), decreasing = TRUE)]
+data.train <- data.train %>% select_(.dots=names(colorder))
+#preview
+colnames(data.train)
+```
+
 ### Training
 ```{r classification}
-  partition<-0.8
+  partition<-part.cla
   inTraining <- createDataPartition(y = data.labels,p=partition, list=FALSE )
   
   training <- data.train[inTraining,]
@@ -587,14 +648,14 @@ data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarN
   cvIndex <- createFolds(factor(ytraining), folds, returnTrain = TRUE)
   ctrl <- trainControl(index = cvIndex,
                method = 'repeatedcv', 
-               number = folds/2,
+               number = folds,
                allowParallel=TRUE,
                verboseIter=FALSE,
                returnData = FALSE,
                repeats = 2
                )
   grid <- expand.grid(
-    mtry = seq(1,floor(sqrt(folds)),by=1)
+    mtry = seq(1,ceiling(sqrt(folds)),by=1)
   )
   
   fit <- train( x = training,
@@ -606,7 +667,7 @@ data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarN
                 maximize = TRUE,
                 tuneGrid=grid,
                 importance=TRUE,
-                ntree=50
+                ntree=ntree
                 )
 
   print(fit)
