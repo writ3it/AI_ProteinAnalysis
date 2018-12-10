@@ -42,11 +42,6 @@ This report is created with parameterized Rmarkdown doc. When isSample=true for 
 
 Description of ligand contains few diffrent datatypes. These are mainly numbers like descriptive statistics of geometry. Because each ligand has diffrend shape some statistics don't appear. Some attributes contains data packed at JSON format. res_name attribute contains target class which is ligand name. Description of geometry need some knowladge about crystallography and PDB data formats. My knowladge is little so analysis isn't big succes, but example of work with R machine learning and analysis tools. 
 
-### Data
-
-
-
-
 ## Rendering
 
 Report rendering command:
