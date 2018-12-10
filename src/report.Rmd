@@ -624,7 +624,7 @@ data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarN
 
 ### Accuracy
 ```{r acc}
-  print(ggplot(fit) + ggtitle("Accurency ligands prediction")+ theme_bw())
+  print(ggplot(fit) + ggtitle("Accurency ligands training")+ theme_bw())
 ```
 
 
