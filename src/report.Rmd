@@ -14,10 +14,11 @@ params:
   csv_name: "big_summary"
   zipped: true
   isSample: true
+  cache: false
 ---
 
 ```{r setup, include=FALSE}
-knitr::opts_chunk$set(echo = TRUE, cache=FALSE)
+knitr::opts_chunk$set(echo = TRUE, cache=!params$cache)
 working_dir <-getwd()
 ```
 
@@ -57,9 +58,8 @@ cor_method<-"spearman"
 
 ### Regression
 
-Regression analysis in this report is an good admission to proper classification. The following parameters have been selected experimentally. Cutoff is an treshold for attributes spearman factor. Because dataset is big, training set will be 90% of whole. Choosed algorithm is Linear Regression which is standard algorithm for numeric prediction.
+Regression analysis in this report is an good admission to proper classification. The following parameters have been selected experimentally. Because dataset is big, training set will be 90% of whole. Choosed algorithm is Linear Regression which is standard algorithm for numeric prediction.
 ```{r reg_params}
-cutoff.reg<-0.4
 part.reg<-0.9
 ```
 
@@ -177,7 +177,10 @@ classes <- ifelse(classes == "integer","numeric",classes)
 classes["res_id"]<-"character"
 # if should be, load all data
 if (!params$isSample){
+  print("Loading full dataset")
   sample <-read.table(dataFilePath, header = TRUE,  nrows=targetRowsNo, sep = ";", quote = "'", colClasses=classes, na.strings = "nan",                     comment.char = "")
+} else {
+  print("Loading partial dataset")
 }
 # will be usefull
 attrib.classes <- classes
@@ -324,7 +327,7 @@ data <- data %>% select_(.dots=c(attrib.target_class, attrib.legal))
 ```{r desc, show, echo=FALSE}
 print(paste("Number of rows: ",nrow(data)))
 print(paste("Number of attributes: ",ncol(data)))
-print(paste("Number of legal attributes: ",length(attrib.legal)))
+print(paste("Number of legal attributes: ",length(intersect(colnames(data),attrib.legal))))
 print(paste("Number of legal numeric attributes: ",length(intersect(attrib.legal,attrib.legal.numeric))))
 ```
 ### Attributes
@@ -522,18 +525,41 @@ prettyTable(df.electrons)
 
 # Machine Learning
 
-## Split data
-```{r splitting}
-splitting <- createDataPartition(y = data.labels,p=split, list=FALSE )
-```
 ### Remove illegal attributes before regression
 ```{r remove_reg1}
 data.train <- data.train %>% select_(.dots=unique(c(setdiff(colnames(data.train),c( attrib.exp_01 )),attrib.exp_02)))
 ```
+
+### Remove strong correlated attributes
+```{r remove_strongs}
+strongCorrelated <- findCorrelation(correlation,cutoff=cutoff.cla)
+cn <- colnames(correlation)
+featuresNames <- cn[strongCorrelated]
+data.train <- data.train %>% select_(.dots=c(setdiff(colnames(data.train),featuresNames),attrib.reg.targets))
+```
+
+### Remove zero var attributes
+```{r classification_select_features}
+zeroVarNames<-nearZeroVar(data.train,names=TRUE,foreach=TRUE,allowParallel=TRUE)
+data.train <- data.train %>% select_(.dots=c(setdiff(colnames(data.train),zeroVarNames),attrib.reg.targets))
+```
+
+### Remove top incompatibile classes
+```{r top_inc}
+toRemove <- unique(append(as.character(df.atoms$res_name),as.character(df.electrons$res_name)))
+idx<-data.labels %in% toRemove
+data.train <- data.train[-idx,]
+data.labels<- data.labels[-idx]
+```
+
+## Split data
+```{r splitting}
+splitting <- createDataPartition(y = data.labels,p=split, list=FALSE )
+```
+
 ## Predict number of electrons or atoms with regression
 
 ```{r regresion, echo=FALSE,messages=FALSE,warning=FALSE}
-treshold <- cutoff.reg
 partition <- part.reg
 
 ctrl <- trainControl(
@@ -541,15 +567,18 @@ ctrl <- trainControl(
   number = 2,
   repeats = 5
 )
+avcols <-   colnames(data.train)
 
 for (target in attrib.reg.targets){
-  features <- correlation.melted %>% 
-    filter(Var1 == target & Var2 != target) %>% 
-    filter(value >= treshold | value <= (-treshold) ) %>% 
+  illegal <- setdiff(attrib.reg.targets,target)
+    features <- correlation.melted %>% 
+    filter( Var1 == target & Var2 != target) %>% 
+    filter( Var2 %in% setdiff(avcols,illegal)) %>%
     mutate(value = abs(value)) %>% arrange(desc(value)) %>% 
     head(20)
-
-  .data <- data.train  %>% select(c(features$Var2,target))
+  cols<-c(as.character(features$Var2),target)
+  
+  .data <- data.train  %>% select(cols)
   #use only first part of data!
   .data <- .data[splitting,]
   inTraining <- createDataPartition(y = .data[,target],p=partition, list=FALSE )
@@ -557,7 +586,7 @@ for (target in attrib.reg.targets){
   testing <- .data[-inTraining,]
   if (target == "dict_atom_non_h_count"){
   fit_atoms <- train( dict_atom_non_h_count  ~ . ,
-               data=training,
+               data=training ,
                method="lm",
                metric="RMSE",
                trControl = ctrl,
@@ -572,7 +601,7 @@ for (target in attrib.reg.targets){
     print(paste(target," RSquared= ",r2))
   } else {
       fit_electrons <- train( dict_atom_non_h_electron_sum  ~ . ,
-                 data=training,
+                 data=training ,
                  method="lm",
                  metric="RMSE",
                  trControl = ctrl,
@@ -602,28 +631,9 @@ data.labels <- data.labels[-splitting]
 estimated_atoms <-  predict(fit_atoms, data.train)
 estimated_electrons <-  predict(fit_electrons, newdata = data.train)
 data.train$estimated_atoms <- estimated_atoms
-
+data.train$estimated_electrons <- estimated_electrons
 ```
 
-### Remove strong correlated attributes
-```{r remove_strongs}
-strongCorrelated <- findCorrelation(correlation,cutoff=cutoff.cla)
-cn <- colnames(correlation)
-featuresNames <- cn[strongCorrelated]
-data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),featuresNames))
-```
-### Remove zero var attributes
-```{r classification_select_features}
-zeroVarNames<-nearZeroVar(data.train,names=TRUE,foreach=TRUE,allowParallel=TRUE)
-data.train <- data.train %>% select_(.dots=setdiff(colnames(data.train),zeroVarNames))
-```
-### Remove top incompatibile classes
-```{r top_inc}
-toRemove <- unique(append(as.character(df.atoms$res_name),as.character(df.electrons$res_name)))
-idx<-data.labels %in% toRemove
-data.train <- data.train[-idx,]
-data.labels<- data.labels[-idx]
-```
 ### Training attributes, ordering
 ```{r tra_attr, echo=FALSE}
 #sort attributes with sds for preview
