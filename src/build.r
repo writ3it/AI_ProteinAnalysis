@@ -2,7 +2,7 @@ library(knitr)
 library(rmarkdown)
 
 d <-getwd()
-
+knitr::opts_chunk$set(cache.lazy = FALSE)
 rmarkdown::render(
   paste(d,"/src/report.Rmd",sep=""),
   output_dir = paste(d,"/docs",sep=""),

@@ -36,12 +36,14 @@ sampleRowsNo <- 4000
 targetRowsNo <- 600000
 ```
 
+*Report presents results of computing part of dataset. Computed dataset contain first n rows (see below at Size of dataset) of master dataset.*
+
 ### Smaller dataset
 
 If you would like to test code on smaller piece you can create it quickly with code:
 ```{bash, eval=FALSE}
 #replace 100K with any number of rows
-head -n 100K data/all_summary.csv > data/big_summary.csv
+head -n 100000 data/all_summary.csv > data/big_summary.csv
 ```
 
 This report is created with parameterized Rmarkdown doc. When isSample=true for rendering will be used first 2K rows.
@@ -187,6 +189,7 @@ attrib.classes <- classes
 ```
 ```{r init_data,echo=FALSE}
 data <- sample
+rm(sample)
 ```
 
 ### Dataset attributes lists 
@@ -524,6 +527,9 @@ prettyTable(df.electrons)
 
 
 # Machine Learning
+```{r free_mem}
+rm(data)
+```
 
 ### Remove illegal attributes before regression
 ```{r remove_reg1}
@@ -660,9 +666,9 @@ colnames(data.train)
                method = 'repeatedcv', 
                number = folds,
                allowParallel=TRUE,
-               verboseIter=FALSE,
                returnData = FALSE,
-               repeats = 2
+               repeats = 2,
+               verboseIter=FALSE
                )
   grid <- expand.grid(
     mtry = seq(1,ceiling(sqrt(folds)),by=1)
